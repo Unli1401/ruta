@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Planificador de Rutas (OSM + OSRM) — CSV + Manual</title>
+
+<!-- Leaflet -->
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+<!-- PapaParse para CSV -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+<style>
+  :root{
+    --bg:#0f172a; --panel:#111827; --card:#1f2937; --muted:#9ca3af;
+    --accent:#22d3ee; --ok:#34d399; --warn:#f59e0b; --danger:#ef4444; --white:#f8fafc;
+  }
+  * { box-sizing: border-box }
+  body {
+    margin:0; background: var(--bg); color: var(--white);
+    font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, "Helvetica Neue", Arial;
+    min-height:100dvh; display:grid; grid-template-rows:auto 1fr;
+  }
+  header {
+    padding: 14px 16px; display:grid; gap:12px; align-items:center;
+    grid-template-columns: 1fr; background: linear-gradient(180deg, rgba(255,255,255,.06), transparent);
+    border-bottom:1px solid rgba(255,255,255,.08); position:sticky; top:0; z-index:50; backdrop-filter: blur(6px);
+  }
+  header h1 { margin:0; font-size:18px; color:var(--muted); font-weight:600 }
+  .grid { display:grid; gap:12px; grid-template-columns: 1fr auto auto auto auto; align-items:end; }
+  .field {
+    background: var(--card); border:1px solid rgba(255,255,255,.1); border-radius:14px; padding:10px;
+    display:grid; gap:6px;
+  }
+  .field label { font-size:12px; color:var(--muted) }
+  .field input { background:transparent; border:none; outline:none; color:var(--white); font-size:14px }
+  .btn {
+    background: var(--card); color: var(--white); border:1px solid rgba(255,255,255,.12);
+    padding: 10px 14px; border-radius:12px; cursor:pointer; font-weight:700; font-size:14px;
+    transition: transform .04s ease, background .2s ease, border-color .2s ease;
+  }
+  .btn:hover { background:#27324a; border-color: rgba(255,255,255,.2) }
+  .btn:active { transform: scale(.98) }
+  .btn.primary { background: var(--accent); color:#0b1324; border-color: transparent }
+  .btn.success { background: var(--ok); color:#06281f; border-color: transparent }
+  .btn.warn { background: var(--warn); color:#1f1605; border-color: transparent }
+  .btn.danger { background: var(--danger); color:#2a0b0b; border-color: transparent }
+  .btn.ghost { background: transparent; border:1px dashed rgba(255,255,255,.3) }
+
+  main { display:grid; grid-template-columns: 420px 1fr; min-height:0 }
+  #sidebar {
+    border-right:1px solid rgba(255,255,255,.08); background: var(--panel);
+    padding:14px; display:grid; grid-template-rows:auto auto 1fr auto; gap:12px; min-height:0;
+  }
+  .card {
+    background: var(--card); border:1px solid rgba(255,255,255,.08); border-radius:14px; padding:12px;
+    box-shadow: 0 6px 24px rgba(0,0,0,.2);
+  }
+  .legend { font-size:12px; color:var(--muted); line-height:1.5 }
+  .row { display:grid; grid-template-columns: 1fr 1fr 1fr auto; gap:8px; align-items:center }
+  .table { display:grid; gap:8px; max-height: 38dvh; overflow:auto; }
+  .thead, .trow {
+    display:grid; grid-template-columns: 36px 1fr 1fr 1fr 100px; gap:8px; align-items:center;
+    padding:8px; border-radius:10px; border:1px solid rgba(255,255,255,.08);
+  }
+  .thead { background: rgba(255,255,255,.05); color: var(--muted); font-weight:700; position:sticky; top:0; z-index:1 }
+  .trow { background: rgba(255,255,255,.02) }
+  .status { font-size:12px; color:var(--muted) }
+  .badge {
+    width:28px; height:28px; border-radius:9px; display:grid; place-items:center; font-weight:800; font-size:13px;
+    background: rgba(34,211,238,.15); color: var(--accent); border:1px solid rgba(34,211,238,.35);
+  }
+  .actions { display:flex; gap:8px; flex-wrap:wrap }
+  .progress {
+    height: 10px; background: rgba(255,255,255,.08); border-radius:999px; overflow:hidden; position:relative;
+  }
+  .progress > div { height:100%; width:0%; background: var(--accent); transition: width .3s ease }
+  .totals { display:flex; gap:12px; flex-wrap:wrap; color:var(--muted); font-size:14px }
+  #map { width:100%; height: calc(100dvh - 72px); }
+  .leaflet-control-attribution { filter: invert(1) hue-rotate(180deg) contrast(.8); opacity:.8 }
+  .num-marker {
+    background: var(--accent); color:#0b1324; border:2px solid #0b1324; font-weight:900;
+    width: 28px; height: 28px; border-radius: 50%; display:grid; place-items:center; box-shadow: 0 4px 12px rgba(0,0,0,.5);
+  }
+  @media (max-width: 1100px){
+    main { grid-template-columns: 1fr }
+    #map { height: 58dvh }
+  }
+</style>
+</head>
+<body>
+<header>
+  <h1>Planificador de Rutas — Entradas Manuales + CSV (sin API de pago)</h1>
+  <div class="grid">
+    <div class="field">
+      <label>Dirección</label>
+      <input id="inDireccion" placeholder="Ej: Alameda 1400, Santiago, Chile" />
+    </div>
+    <div class="field">
+      <label>Remitente</label>
+      <input id="inRemitente" placeholder="Ej: Juan Pérez" />
+    </div>
+    <div class="field">
+      <label>Receptor/Comprador</label>
+      <input id="inReceptor" placeholder="Ej: María López" />
+    </div>
+    <button class="btn primary" id="btnAgregar">Agregar</button>
+    <label class="btn ghost" style="text-align:center; cursor:pointer;">
+      Subir CSV
+      <input type="file" id="fileCSV" accept=".csv" style="display:none">
+    </label>
+  </div>
+</header>
+
+<main>
+  <aside id="sidebar">
+    <div class="card">
+      <div class="legend">
+        <strong>Formato CSV:</strong> columnas <code>direccion, remitente, receptor</code>. Puedes combinar entradas manuales y CSV.
+        <br> Al procesar, se respeta un <strong>delay de 1 segundo</strong> por geocodificación para cumplir con Nominatim.
+        <br> Luego se optimiza la ruta con OSRM y se numeran los pines.
+        <br><br>
+        <em>Opcional:</em> si quieres identificarte frente a Nominatim, edita la constante <code>NOMINATIM_EMAIL</code> en el código.
+      </div>
+    </div>
+
+    <div class="card" style="display:grid; gap:10px;">
+      <div style="display:flex; align-items:center; justify-content:space-between;">
+        <strong>Direcciones cargadas</strong>
+        <span id="countLbl" class="status">0 ítems</span>
+      </div>
+      <div class="table" id="tableBody">
+        <div class="thead">
+          <div>#</div><div>Dirección</div><div>Remitente</div><div>Receptor</div><div>Estado</div>
+        </div>
+        <!-- rows go here -->
+      </div>
+      <div class="actions">
+        <button class="btn success" id="btnProcesar">Procesar y Optimizar</button>
+        <button class="btn warn" id="btnEnfocar">Enfocar mapa</button>
+        <button class="btn danger" id="btnLimpiar">Limpiar todo</button>
+        <button class="btn" id="btnExportar">Exportar orden CSV</button>
+      </div>
+      <div class="status" id="statusMsg">Listo.</div>
+      <div class="progress"><div id="progressBar"></div></div>
+      <div class="totals" id="totales"><span>Distancia: —</span><span>Tiempo: —</span></div>
+    </div>
+  </aside>
+
+  <section id="map"></section>
+</main>
+
+<script>
+/* ================== Configuración ================== */
+// Pon tu email si quieres identificarte ante Nominatim (opcional pero recomendado por su política):
+const NOMINATIM_EMAIL = ""; // ej: "tucorreo@ejemplo.com"
+// Delay entre geocodificaciones (ms). Nominatim sugiere 1 req/seg.
+const GEOCODE_DELAY_MS = 1000;
+
+/* ================== Estado global ================== */
+const state = {
+  // items: { id, direccion, remitente, receptor, status: 'pendiente' | 'ok' | 'error', lat, lon, marker }
+  items: [],
+  routeLayer: null,
+  orderIndices: null, // orden optimizado (índices de items)
+  nextId: 1
+};
+
+/* ================== Mapa ================== */
+const map = L.map('map', { zoomControl: true }).setView([-33.4489, -70.6693], 12);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+  maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
+}).addTo(map);
+
+function createNumberIcon(num){
+  return L.divIcon({
+    className: 'num-marker',
+    html: `<span>${num}</span>`,
+    iconSize: [28,28],
+    iconAnchor: [14,14]
+  });
+}
+
+function fitMapToMarkers(){
+  const markers = state.items.filter(x => x.marker).map(x => x.marker);
+  if (markers.length === 0) return;
+  const group = L.featureGroup(markers);
+  map.fitBounds(group.getBounds().pad(0.2));
+}
+
+/* ================== Utilidades ================== */
+const $ = sel => document.querySelector(sel);
+function sleep(ms){ return new Promise(r => setTimeout(r, ms)); }
+function formatKm(m){ const km = m/1000; return (km>=100)? km.toFixed(0)+' km' : km.toFixed(1)+' km'; }
+function formatDuration(s){ const h=Math.floor(s/3600), m=Math.round((s%3600)/60); return h? `${h} h ${m.toString().padStart(2,'0')} min` : `${m} min`; }
+function haversine(lat1, lon1, lat2, lon2){
+  const toRad = d => d * Math.PI / 180, R=6371000, dLat=toRad(lat2-lat1), dLon=toRad(lon2-lon1);
+  const a = Math.sin(dLat/2)**2 + Math.cos(toRad(lat1))*Math.cos(toRad(lat2))*Math.sin(dLon/2)**2;
+  return 2*R*Math.asin(Math.sqrt(a));
+}
+
+/* ================== Tabla / UI ================== */
+function refreshTable(){
+  const table = $('#tableBody');
+  // borrar filas antiguas excepto cabecera
+  table.querySelectorAll('.trow').forEach(x => x.remove());
+
+  state.items.forEach((it, idx) => {
+    const row = document.createElement('div');
+    row.className = 'trow';
+    const num = (state.orderIndices ? state.orderIndices.indexOf(idx)+1 : idx+1);
+    const statusTxt = it.status === 'ok' ? 'Geocodificada' : (it.status === 'error' ? 'Error' : 'Pendiente');
+    row.innerHTML = `
+      <div><span class="badge">${num}</span></div>
+      <div>${it.direccion}</div>
+      <div>${it.remitente || '-'}</div>
+      <div>${it.receptor || '-'}</div>
+      <div class="status">${statusTxt}</div>
+    `;
+    table.appendChild(row);
+  });
+
+  $('#countLbl').textContent = `${state.items.length} ${state.items.length===1?'ítem':'ítems'}`;
+}
+
+function setStatus(msg){ $('#statusMsg').textContent = msg; }
+function setProgress(pct){ $('#progressBar').style.width = `${pct}%`; }
+function updateTotals(distance=null, duration=null){
+  $('#totales').innerHTML = `<span>Distancia: ${distance!=null?formatKm(distance):'—'}</span><span>Tiempo: ${duration!=null?formatDuration(duration):'—'}</span>`;
+}
+
+/* ================== Datos: agregar / limpiar ================== */
+function addItem(direccion, remitente, receptor){
+  const id = state.nextId++;
+  state.items.push({ id, direccion: direccion.trim(), remitente: (remitente||'').trim(), receptor: (receptor||'').trim(), status: 'pendiente', lat:null, lon:null, marker:null });
+  refreshTable();
+}
+
+function clearAll(){
+  // quitar marcadores y ruta
+  state.items.forEach(it => { if (it.marker) map.removeLayer(it.marker); });
+  if (state.routeLayer){ map.removeLayer(state.routeLayer); state.routeLayer = null; }
+  Object.assign(state, { items: [], orderIndices: null, nextId:1 });
+  refreshTable(); updateTotals(); setStatus('Listo.'); setProgress(0);
+}
+
+/* ================== Geocodificación ================== */
+async function geocodeOne(address){
+  const emailParam = NOMINATIM_EMAIL ? `&email=${encodeURIComponent(NOMINATIM_EMAIL)}` : '';
+  const url = `https://nominatim.openstreetmap.org/search?format=json&addressdetails=0&limit=1&q=${encodeURIComponent(address)}${emailParam}`;
+  const res = await fetch(url, { headers: { 'Accept': 'application/json' }});
+  if (!res.ok) throw new Error('Geocoding HTTP error');
+  const data = await res.json();
+  if (!Array.isArray(data) || data.length===0) return null;
+  const { lat, lon, display_name } = data[0];
+  return { lat: parseFloat(lat), lon: parseFloat(lon), name: display_name };
+}
+
+async function geocodeAllWithDelay(){
+  setStatus('Geocodificando direcciones con delay de 1 seg...');
+  let total = state.items.length, done = 0;
+  for (let i=0; i<state.items.length; i++){
+    const it = state.items[i];
+    if (it.status === 'ok' && it.lat && it.lon){ done++; setProgress(Math.round(done/total*100)); continue; } // saltar ya geocodificados
+    try{
+      const g = await geocodeOne(it.direccion);
+      if (!g){ it.status = 'error'; }
+      else {
+        it.status = 'ok'; it.lat = g.lat; it.lon = g.lon;
+        // crear/actualizar marcador
+        if (it.marker) map.removeLayer(it.marker);
+        it.marker = L.marker([g.lat, g.lon], { icon: createNumberIcon(i+1) })
+          .addTo(map)
+          .bindPopup(`<strong>${it.direccion}</strong><br>Remitente: ${it.remitente||'-'}<br>Receptor: ${it.receptor||'-'}`);
+      }
+    }catch(e){
+      console.error(e); it.status = 'error';
+    }
+    done++; setProgress(Math.round(done/total*100)); refreshTable();
+    await sleep(GEOCODE_DELAY_MS);
+  }
+  fitMapToMarkers();
+}
+
+/* ================== OSRM: Optimización de ruta ================== */
+async function optimizeRoute(){
+  const valid = state.items.filter(x => x.status==='ok');
+  if (valid.length < 2){ setStatus('Se requieren al menos 2 direcciones geocodificadas.'); return; }
+
+  const coords = state.items.map(x => (x.status==='ok'? `${x.lon},${x.lat}` : null)).filter(Boolean).join(';');
+  setStatus('Consultando OSRM para optimizar la ruta...');
+  let data;
+  try{
+    const url = `https://router.project-osrm.org/trip/v1/driving/${coords}?source=first&roundtrip=false&overview=full&geometries=geojson`;
+    const res = await fetch(url);
+    data = await res.json();
+  }catch(e){ console.error(e); setStatus('Error contactando OSRM.'); return; }
+
+  if (!data || data.code!=='Ok' || !data.trips?.length){ setStatus('OSRM no pudo calcular la ruta.'); return; }
+
+  const trip = data.trips[0];
+  const waypoints = data.waypoints;
+
+  // Mapear waypoints "snapped" a nuestros items por distancia mínima
+  const used = new Set();
+  const orderIndices = new Array(waypoints.length);
+  waypoints.forEach(wp => {
+    const [lon, lat] = wp.location; let bestIdx=-1, bestDist=Infinity;
+    state.items.forEach((it, idx) => {
+      if (it.status!=='ok' || used.has(idx)) return;
+      const d = haversine(it.lat, it.lon, lat, lon);
+      if (d < bestDist){ bestDist = d; bestIdx = idx; }
+    });
+    if (bestIdx>=0){ used.add(bestIdx); orderIndices[wp.waypoint_index] = bestIdx; }
+  });
+
+  // Dibujar ruta
+  if (state.routeLayer){ map.removeLayer(state.routeLayer); state.routeLayer = null; }
+  state.routeLayer = L.geoJSON(trip.geometry, { weight:5, opacity:.9 }).addTo(map);
+  map.fitBounds(state.routeLayer.getBounds().pad(0.2));
+
+  // Renumerar pines según orden óptimo
+  orderIndices.forEach((idx, i) => {
+    const it = state.items[idx];
+    if (it?.marker) it.marker.setIcon(createNumberIcon(i+1));
+  });
+
+  state.orderIndices = orderIndices;
+  refreshTable();
+  updateTotals(trip.distance, trip.duration);
+  setStatus('Ruta optimizada lista ✅');
+}
+
+/* ================== CSV ================== */
+function normalizeHeader(h){
+  return String(h||'').trim().toLowerCase().replace(/\s+/g,'');
+}
+function handleCSV(file){
+  if (!file) return;
+  setStatus('Leyendo CSV...');
+  Papa.parse(file, {
+    header: true,
+    skipEmptyLines: true,
+    complete: (results) => {
+      const rows = results.data;
+      const hdr = results.meta.fields.map(normalizeHeader);
+      // buscar posibles nombres de columnas
+      const iDir = hdr.findIndex(h => ['direccion','dirección','address','dir'].includes(h));
+      const iRem = hdr.findIndex(h => ['remitente','origen','sender'].includes(h));
+      const iRec = hdr.findIndex(h => ['receptor','destinatario','comprador','receiver','buyer'].includes(h));
+      if (iDir === -1){ setStatus('No se encontró columna "direccion" en el CSV.'); return; }
+      let added = 0;
+      rows.forEach(r => {
+        const vals = Object.values(r);
+        const direccion = (vals[iDir]||'').toString();
+        const remitente = iRem>=0 ? (vals[iRem]||'').toString() : '';
+        const receptor  = iRec>=0 ? (vals[iRec]||'').toString() : '';
+        if (direccion.trim()) { addItem(direccion, remitente, receptor); added++; }
+      });
+      setStatus(`CSV cargado: ${added} filas agregadas.`);
+    },
+    error: (err) => setStatus(`Error leyendo CSV: ${err}`)
+  });
+}
+
+/* ================== Exportar orden ================== */
+function exportOrderCSV(){
+  const headers = ['orden','direccion','remitente','receptor','lat','lon'];
+  let lines = [headers.join(',')];
+  const order = state.orderIndices ? state.orderIndices : state.items.map((_,i)=>i);
+  order.forEach((idx, i) => {
+    const it = state.items[idx];
+    lines.push([
+      i+1,
+      `"${(it.direccion||'').replace(/"/g,'""')}"`,
+      `"${(it.remitente||'').replace(/"/g,'""')}"`,
+      `"${(it.receptor||'').replace(/"/g,'""')}"`,
+      it.lat??'',
+      it.lon??''
+    ].join(','));
+  });
+  const blob = new Blob([lines.join('\n')], { type:'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = 'orden_optimizado.csv';
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+/* ================== Eventos ================== */
+$('#btnAgregar').addEventListener('click', () => {
+  const d = $('#inDireccion').value.trim();
+  if (!d){ setStatus('La dirección es obligatoria.'); return; }
+  addItem(d, $('#inRemitente').value, $('#inReceptor').value);
+  $('#inDireccion').value = ''; $('#inRemitente').value=''; $('#inReceptor').value='';
+  setStatus('Ítem agregado. Puedes seguir agregando o procesar.');
+});
+['inDireccion','inRemitente','inReceptor'].forEach(id=>{
+  document.getElementById(id).addEventListener('keydown', e=>{
+    if (e.key==='Enter'){ e.preventDefault(); $('#btnAgregar').click(); }
+  });
+});
+
+$('#fileCSV').addEventListener('change', (e) => handleCSV(e.target.files[0]));
+$('#btnProcesar').addEventListener('click', async () => {
+  if (state.items.length===0){ setStatus('No hay direcciones para procesar.'); return; }
+  setProgress(0); updateTotals(); state.orderIndices = null; refreshTable();
+  await geocodeAllWithDelay();
+  await optimizeRoute();
+});
+$('#btnEnfocar').addEventListener('click', fitMapToMarkers);
+$('#btnLimpiar').addEventListener('click', clearAll);
+$('#btnExportar').addEventListener('click', exportOrderCSV);
+
+/* ================== Inicio ================== */
+refreshTable(); updateTotals(); setStatus('Listo.');
+</script>
+</body>
+</html>
